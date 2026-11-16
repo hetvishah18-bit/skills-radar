@@ -1,0 +1,15 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Data never goes into the repo. Your tracker, resume and digest stay on your computer, and the
+# shared job database is stored as a GitHub *release file* by the daily workflow (see DEPLOY.md),
+# so the repo doesn't grow by ~90 MB every day.
+data/
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# macOS folder settings
+.DS_Store

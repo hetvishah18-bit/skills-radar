@@ -1,0 +1,59 @@
+# Every morning: collect new postings, save the database as a release file, and email the digest
+# (daily, or Mondays only if DIGEST_FREQUENCY = "weekly" in config.py).
+# Run it any time from GitHub: Actions tab -> "Daily collect + digest" -> Run workflow.
+#
+# Why a release file and not a commit? radar.db is ~90 MB. Committing it daily would keep every old
+# copy in the repo's history (GBs within weeks). A release file is simply replaced each day.
+name: Daily collect + digest
+
+on:
+  schedule:
+    - cron: "17 14 * * *"     # every day 14:17 UTC (6:17 AM Pacific, 7:17 AM in summer)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write              # needed to create/update the "data" release
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+      DIGEST_TO: ${{ secrets.DIGEST_TO }}
+      RESUME_TEXT: ${{ secrets.RESUME_TEXT }}   # only used if DIGEST_USE_RESUME = True in config.py
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Get the saved data from the last run
+        run: |
+          mkdir -p data
+          gh release download data --dir data --pattern 'radar.db.gz' --pattern '*.json' \
+            || echo "No saved data yet (this is the first run)"
+          if [ -f data/radar.db.gz ]; then gunzip -f data/radar.db.gz; fi
+
+      - name: Collect new postings
+        run: python collect.py
+
+      - name: Save today's data (replaces the release file)
+        run: |
+          gzip -kf data/radar.db
+          gh release view data >/dev/null 2>&1 || gh release create data --title "Job data" \
+            --notes "Updated every day by GitHub Actions. radar.db.gz = the job database used by the dashboard."
+          files="data/radar.db.gz"
+          for f in data/discovered_companies.json data/board_failures.json; do [ -f "$f" ] && files="$files $f"; done
+          gh release upload data $files --clobber
+
+      - name: Email digest
+        if: env.GMAIL_ADDRESS != '' && env.GMAIL_APP_PASSWORD != ''
+        run: python digest.py --auto
