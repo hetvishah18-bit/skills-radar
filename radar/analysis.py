@@ -9,15 +9,43 @@ from radar.flags import work_auth_flags, BLOCKING
 from radar.skills import SKILL_CATEGORY, extract_skills
 
 
+# Bump when the level / years / flags rules change, so saved results get recalculated on the next collect.
+RULES_VERSION = 2
+
+
+def derive(title, description, seniority) -> tuple[str, int | None, str]:
+    """Career level, minimum years asked, and work-authorization flags for one posting."""
+    flags = work_auth_flags(description)
+    return infer_level(title, description, seniority), min_years(description), ", ".join(flags)
+
+
 def load(conn: sqlite3.Connection) -> tuple[pd.DataFrame, pd.DataFrame]:
     have = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
-    opt = ", ".join(c if c in have else f"NULL AS {c}"
-                    for c in ("seniority", "remote", "salary_usd", "posted_at", "link_status"))
+    cols = ("seniority", "remote", "salary_usd", "posted_at", "link_status", "level", "min_years", "work_auth",
+            "rules_version")
+    opt = ", ".join(c if c in have else f"NULL AS {c}" for c in cols)   # older databases lack newer columns
     jobs = pd.read_sql("SELECT job_key, source, company, title, role, location, url, first_seen, last_seen, "
-                       f"{opt}, description FROM jobs", conn)   # older databases may lack the newer columns
+                       f"{opt} FROM jobs", conn)
     skills = pd.read_sql("SELECT job_key, skill FROM job_skills", conn)
     if jobs.empty:
         return jobs, skills
+    # Level / years / flags were saved by collect.py. Only postings without up-to-date saved values are
+    # worked out here (and only their descriptions are read), which keeps start-up fast.
+    todo = jobs["rules_version"].isna() | (jobs["rules_version"] < RULES_VERSION)
+    if todo.any():
+        keys = jobs.loc[todo, "job_key"].tolist()
+        desc = {}
+        for i in range(0, len(keys), 900):
+            chunk = keys[i:i + 900]
+            desc.update(conn.execute(f"SELECT job_key, description FROM jobs WHERE job_key IN "
+                                     f"({','.join('?' * len(chunk))})", chunk).fetchall())
+        out = [derive(t, desc.get(k), s) for k, t, s in
+               zip(jobs.loc[todo, "job_key"], jobs.loc[todo, "title"], jobs.loc[todo, "seniority"])]
+        jobs.loc[todo, ["level", "min_years", "work_auth"]] = pd.DataFrame(out, index=jobs.index[todo]).values
+    jobs["work_auth"] = jobs["work_auth"].fillna("")
+    jobs["auth_blocked"] = jobs["work_auth"].map(lambda f: bool(BLOCKING & set(filter(None, f.split(", ")))))
+    jobs["min_years"] = pd.to_numeric(jobs["min_years"], errors="coerce")
+    jobs = jobs.drop(columns="rules_version")
     jobs["first_seen"] = pd.to_datetime(jobs["first_seen"])
     jobs["last_seen"] = _ts(jobs["last_seen"])
     jobs["is_open"] = open_mask(jobs, board_runs(conn))
@@ -26,12 +54,6 @@ def load(conn: sqlite3.Connection) -> tuple[pd.DataFrame, pd.DataFrame]:
     jobs["posted_exact"] = pa.str.len() > 10
     jobs["posted_ts"] = pd.to_datetime(pa.where(pa != "", jobs["first_seen"].dt.strftime("%Y-%m-%d")),
                                        utc=True, errors="coerce", format="mixed")
-    jobs["level"] = [infer_level(t, d, s) for t, d, s in zip(jobs.title, jobs.description, jobs.seniority)]
-    jobs["min_years"] = jobs.description.map(min_years)
-    flags = jobs.description.map(work_auth_flags)
-    jobs["work_auth"] = flags.map(lambda f: ", ".join(f))
-    jobs["auth_blocked"] = flags.map(lambda f: bool(BLOCKING & set(f)))
-    jobs = jobs.drop(columns="description")
     jobs["is_us"] = jobs["location"].map(is_us) | (jobs["source"] == "linkedin_kaggle")  # that dataset is US-only
     # week bucket = Monday of the week the posting was first seen
     jobs["week"] = jobs["first_seen"].dt.to_period("W-SUN").dt.start_time

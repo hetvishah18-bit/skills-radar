@@ -46,6 +46,21 @@ def check_links(conn, today: str):
           f"Greenhouse copy, {unknown:,} couldn't be checked (site blocks checks)")
 
 
+def save_derived(conn):
+    """Work out level / years / flags for new jobs (or all jobs after a rules change) and save them,
+    so the dashboard never has to read every description when it starts."""
+    from radar.analysis import RULES_VERSION, derive
+    rows = conn.execute(
+        "SELECT job_key, title, description, seniority FROM jobs WHERE rules_version IS NULL "
+        "OR (rules_version < ? AND description != '')", (RULES_VERSION,)).fetchall()
+    if not rows:
+        return
+    print(f"Reading {len(rows):,} job descriptions for level / sponsorship / experience ...")
+    conn.executemany("UPDATE jobs SET level = ?, min_years = ?, work_auth = ?, rules_version = ? WHERE job_key = ?",
+                     [(*derive(t, d, s), RULES_VERSION, k) for k, t, d, s in rows])
+    conn.commit()
+
+
 def main():
     today = dt.date.today().isoformat()
     run_ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")   # tells same-day runs apart
@@ -63,6 +78,7 @@ def main():
     import pandas as pd
     db.mark_boards_ok(conn, OK_PREFIXES, run_ts)
     conn.commit()
+    save_derived(conn)
     if getattr(config, "LINK_CHECK", True):
         check_links(conn, today)
     df = pd.read_sql("SELECT job_key, source, last_seen, link_status FROM jobs", conn)

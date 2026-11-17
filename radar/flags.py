@@ -63,15 +63,29 @@ _RX = {
 _NEGATED = re.compile(r"\b(?:no|not|without|nor)\s+(?:\w+\s+)?$", re.I)   # "No DoD clearance required"
 
 
+# Cheap pre-checks: only run a flag's (slow) pattern if the posting contains one of its key words.
+_HINTS = {
+    NO_SPONSOR: re.compile(r"sponsor|\b(?:opt|cpt|f-?1|h-?1b?|visas?)\b", re.I),
+    CITIZEN: re.compile(r"citizen|u\.?\s?s\.?\s+(?:person|national)|permanent\s+resident|green\s+card|\bitar\b|export", re.I),
+    CLEARANCE: re.compile(r"clearance", re.I),
+    SPONSORS: re.compile(r"sponsor|\b(?:opt|cpt)\b", re.I),
+}
+_ANY_HINT = re.compile("|".join(f"(?:{h.pattern})" for h in _HINTS.values()), re.I)
+
+
 def work_auth_flags(description: str | None) -> list[str]:
     if not description:
         return []
+    if not _ANY_HINT.search(description):
+        return []
     from radar.skills import clean_text
     text = clean_text(description)
-    found = [f for f in (NO_SPONSOR, CITIZEN) if _RX[f].search(text)]
-    if any(not _NEGATED.search(text[max(0, m.start() - 20):m.start()]) for m in _RX[CLEARANCE].finditer(text)):
+    has = {f: bool(h.search(text)) for f, h in _HINTS.items()}
+    found = [f for f in (NO_SPONSOR, CITIZEN) if has[f] and _RX[f].search(text)]
+    if has[CLEARANCE] and any(not _NEGATED.search(text[max(0, m.start() - 20):m.start()])
+                              for m in _RX[CLEARANCE].finditer(text)):
         found.append(CLEARANCE)
-    if not found and _RX[SPONSORS].search(text):
+    if not found and has[SPONSORS] and _RX[SPONSORS].search(text):
         found.append(SPONSORS)
     return found
 

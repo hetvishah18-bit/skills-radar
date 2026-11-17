@@ -36,7 +36,8 @@ CREATE INDEX IF NOT EXISTS idx_jobs_role ON jobs(role);
 """
 
 OPTIONAL_COLS = {"seniority": "TEXT", "remote": "INTEGER", "salary_usd": "REAL", "posted_at": "TEXT",
-                 "link_status": "TEXT", "link_checked": "TEXT"}
+                 "link_status": "TEXT", "link_checked": "TEXT",
+                 "level": "TEXT", "min_years": "INTEGER", "work_auth": "TEXT", "rules_version": "INTEGER"}
 COLS = ["job_key", "source", "company", "title", "role", "location", "url", "description",
         "first_seen", "last_seen", "seniority", "remote", "salary_usd", "posted_at"]
 
